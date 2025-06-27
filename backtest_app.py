@@ -8,7 +8,7 @@ st.set_page_config(layout="wide")
 st.title("📈 Backtesting de Carteira de Ações")
 
 # ⚙️ Parâmetros padrão (mantemos .SA internamente)
-default_tickers = [
+DEFAULT_TICKERS = [
     "BBAS3.SA",
     "SAPR11.SA",
     "TAEE11.SA",
@@ -21,16 +21,28 @@ default_tickers = [
 ]
 
 # 🔄 Função de rerun compatível
-
 def do_rerun():
     if hasattr(st, "experimental_rerun"):
         st.experimental_rerun()
     elif hasattr(st, "rerun"):
         st.rerun()
 
+# 🗓️ Cache do primeiro dia de negociação
+@st.cache_data(show_spinner=False)
+def get_first_trade_date(ticker: str):
+    """Retorna a data do primeiro pregão do ticker (ou None)."""
+    try:
+        info = yf.Ticker(ticker).info
+        epoch = info.get("firstTradeDateEpochUtc")
+        if epoch:
+            return pd.to_datetime(epoch, unit="s").date()
+    except Exception:
+        pass
+    return None
+
 # 📌 Session state
 if "tickers" not in st.session_state:
-    st.session_state.tickers = default_tickers.copy()
+    st.session_state.tickers = DEFAULT_TICKERS.copy()
 
 end_date = date.today()
 start_date = end_date - timedelta(days=365 * 10)
@@ -53,7 +65,7 @@ with col_add:
                 st.session_state.tickers.append(raw)
                 do_rerun()
 
-# 🌟 Exibição compacta dos tickers como "badges" (botões lado a lado)
+# 🌟 Exibição compacta dos tickers como badges
 if st.session_state.tickers:
     st.markdown("### 📋 Tickers atuais")
     badge_rows = [st.session_state.tickers[i : i + 6] for i in range(0, len(st.session_state.tickers), 6)]
@@ -83,22 +95,31 @@ if not tickers:
 # ────────────────────────────────────────────────────────────────
 if st.button("🔁 Rodar Backtest", type="primary") and tickers:
     try:
-        # 1) Dados da carteira
-        portfolio_data = yf.download(
+        # 1) Dados da carteira --------------------------------------------------
+        raw_data = yf.download(
             tickers,
             start=start,
             end=end,
-            auto_adjust=False, #Adjust all OHLC automatically? Default is True
+            auto_adjust=False,
             progress=False,
         )["Adj Close"]
 
-        if isinstance(portfolio_data, pd.Series):
-            portfolio_data = portfolio_data.to_frame(name=tickers[0])
+        if isinstance(raw_data, pd.Series):
+            raw_data = raw_data.to_frame(name=tickers[0])
 
-        if isinstance(portfolio_data.columns, pd.MultiIndex):
-            portfolio_data.columns = portfolio_data.columns.droplevel(0)
+        if isinstance(raw_data.columns, pd.MultiIndex):
+            raw_data.columns = raw_data.columns.droplevel(0)
 
-        # 2) Benchmark
+        # 2) Limpa datas ANTES da listagem ---------------------------
+        cleaned = raw_data.copy()
+        for col in cleaned.columns:
+            first_trade = get_first_trade_date(col)
+            if first_trade:
+                cleaned.loc[cleaned.index.date < first_trade, col] = pd.NA
+            cleaned.loc[cleaned[col] < 0.1, col] = pd.NA
+        portfolio_data = cleaned
+
+        # 3) Benchmark (Ibovespa) ------------------------------------
         benchmark_ticker = "^BVSP"
         benchmark_data = yf.download(
             benchmark_ticker,
@@ -108,27 +129,32 @@ if st.button("🔁 Rodar Backtest", type="primary") and tickers:
             progress=False,
         )["Adj Close"]
 
-        # 3) Alinhar datas
+        # 4) Alinhar datas ------------------------------------------
         combined = pd.concat([portfolio_data, benchmark_data], axis=1, join="inner")
-        portfolio_data = combined[tickers]
+        combined = combined.sort_index()
+        portfolio_data = combined[tickers].dropna(how="all")
         benchmark_data = combined[benchmark_ticker]
 
-        # 4) Normalizar (base 100)
-        normalized_port = portfolio_data / portfolio_data.iloc[0]
+        # 5) Normalizar coluna a coluna (primeiro valor válido) ------
+        def normalize_col(col):
+            first_valid = col.first_valid_index()
+            return col / col.loc[first_valid]
+
+        normalized_port = portfolio_data.apply(normalize_col, axis=0)
         portfolio = (normalized_port * weights).sum(axis=1)
         benchmark_norm = benchmark_data / benchmark_data.iloc[0]
 
-        # 5) Gráfico
+        # 6) Gráfico -------------------------------------------------
         st.subheader("📊 Retorno acumulado: Carteira vs. Ibovespa")
         fig, ax = plt.subplots(figsize=(12, 5))
         portfolio.plot(ax=ax, label="Carteira")
-        benchmark_norm.plot(ax=ax, label="Ibovespa")
+        benchmark_norm.loc[portfolio.index].plot(ax=ax, label="Ibovespa")
         ax.set_ylabel("Retorno acumulado (base 100)")
         ax.grid(True)
         ax.legend()
         st.pyplot(fig)
 
-        # 6) Estatísticas
+        # 7) Estatísticas -------------------------------------------
         st.subheader("📌 Estatísticas da Carteira")
         total_return = portfolio[-1] / portfolio[0] - 1
         annualized_return = (portfolio[-1] / portfolio[0]) ** (1 / ((end - start).days / 365)) - 1
@@ -136,36 +162,34 @@ if st.button("🔁 Rodar Backtest", type="primary") and tickers:
         st.markdown(f"- **Retorno anualizado:** {annualized_return:.2%}")
 
         st.subheader("📌 Estatísticas do Ibovespa")
-        ibov_total = benchmark_norm[-1] - 1
-        ibov_annual = benchmark_norm[-1] ** (1 / ((end - start).days / 365)) - 1
+        ibov_total = benchmark_norm.loc[portfolio.index][-1] - 1
+        ibov_annual = benchmark_norm.loc[portfolio.index][-1] ** (1 / ((end - start).days / 365)) - 1
         st.markdown(f"- **Retorno total:** {ibov_total:.2%}")
         st.markdown(f"- **Retorno anualizado:** {ibov_annual:.2%}")
 
-        # 7) Tabela base 100
+        # 8) Tabela base 100 ----------------------------------------
         st.subheader("📋 Dados utilizados (base 100)")
         table_norm = normalized_port.copy()
         table_norm["Carteira"] = portfolio
-        table_norm["Ibovespa"] = benchmark_norm
-        st.dataframe(table_norm)
+        table_norm["Ibovespa"] = benchmark_norm.loc[portfolio.index]
+        st.dataframe(table_norm.sort_index())
 
-        norm_csv = table_norm.to_csv().encode("utf-8")
         st.download_button(
             "⬇️ Baixar CSV (base 100)",
-            data=norm_csv,
+            data=table_norm.to_csv().encode("utf-8"),
             file_name="backtest_base100.csv",
             mime="text/csv",
         )
 
-        # 8) Tabela cotações
+        # 9) Tabela de cotações -------------------------------------
         st.subheader("📋 Cotações ajustadas (R$)")
         price_df = portfolio_data.copy()
         price_df["Ibovespa"] = benchmark_data
-        st.dataframe(price_df)
+        st.dataframe(price_df.sort_index())
 
-        price_csv = price_df.to_csv().encode("utf-8")
         st.download_button(
             "⬇️ Baixar CSV (cotações)",
-            data=price_csv,
+            data=price_df.to_csv().encode("utf-8"),
             file_name="backtest_quotes.csv",
             mime="text/csv",
         )
