@@ -88,7 +88,7 @@ if st.button("🔁 Rodar Backtest", type="primary") and tickers:
             tickers,
             start=start,
             end=end,
-            auto_adjust=False,
+            auto_adjust=False, #Adjust all OHLC automatically? Default is True
             progress=False,
         )["Adj Close"]
 
