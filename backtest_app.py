@@ -7,8 +7,7 @@ from datetime import date, timedelta
 st.set_page_config(layout="wide")
 st.title("📈 Backtesting de Carteira de Ações")
 
-# ⚙️ Parâmetros padrão
-# (mantemos o sufixo .SA internamente – o usuário não precisa digitá‑lo)
+# ⚙️ Parâmetros padrão (mantemos .SA internamente)
 default_tickers = [
     "BBAS3.SA",
     "SAPR11.SA",
@@ -21,14 +20,15 @@ default_tickers = [
     "CMIG4.SA",
 ]
 
-# 👉 Função compatível para forçar rerun em diferentes versões do Streamlit
+# 🔄 Função de rerun compatível
+
 def do_rerun():
     if hasattr(st, "experimental_rerun"):
         st.experimental_rerun()
     elif hasattr(st, "rerun"):
         st.rerun()
 
-# 👉 Session state
+# 📌 Session state
 if "tickers" not in st.session_state:
     st.session_state.tickers = default_tickers.copy()
 
@@ -44,23 +44,26 @@ col_input, col_add = st.columns([3, 1])
 with col_input:
     new_ticker = st.text_input("Adicionar ticker (ex.: PETR4)")
 with col_add:
-    if st.button("➕ Adicionar"):
+    if st.button("➕ Adicionar", use_container_width=True):
         raw = new_ticker.strip().upper()
         if raw:
-            # Adiciona sufixo .SA se o usuário não digitou e não é índice/ETF global
             if "." not in raw and not raw.startswith("^"):
                 raw += ".SA"
             if raw not in st.session_state.tickers:
                 st.session_state.tickers.append(raw)
                 do_rerun()
 
-st.markdown("### 📋 Tickers atuais")
-for idx, tic in enumerate(st.session_state.tickers):
-    col_tic, col_rem = st.columns([3, 1])
-    col_tic.write(f"- {tic}")
-    if col_rem.button("🗑️", key=f"remove_{tic}"):
-        st.session_state.tickers.pop(idx)
-        do_rerun()
+# 🌟 Exibição compacta dos tickers como "badges" (botões lado a lado)
+if st.session_state.tickers:
+    st.markdown("### 📋 Tickers atuais")
+    badge_rows = [st.session_state.tickers[i : i + 6] for i in range(0, len(st.session_state.tickers), 6)]
+    for row in badge_rows:
+        cols = st.columns(len(row))
+        for idx, tic in enumerate(row):
+            label = tic.replace(".SA", "")
+            if cols[idx].button(f"{label} ✕", key=f"rem_{tic}", use_container_width=True):
+                st.session_state.tickers.remove(tic)
+                do_rerun()
 
 col1, col2 = st.columns(2)
 with col1:
@@ -68,7 +71,7 @@ with col1:
 with col2:
     end = st.date_input("Data de fim", value=end_date)
 
-# 🎒 Pesos iguais por padrão
+# 🎒 Pesos iguais
 tickers = st.session_state.tickers
 weights = [1 / len(tickers)] * len(tickers) if tickers else []
 
@@ -78,9 +81,9 @@ if not tickers:
 # ────────────────────────────────────────────────────────────────
 # 🔁 Backtest
 # ────────────────────────────────────────────────────────────────
-if st.button("🔁 Rodar Backtest") and tickers:
+if st.button("🔁 Rodar Backtest", type="primary") and tickers:
     try:
-        # 1) Baixa dados da carteira
+        # 1) Dados da carteira
         portfolio_data = yf.download(
             tickers,
             start=start,
@@ -89,15 +92,13 @@ if st.button("🔁 Rodar Backtest") and tickers:
             progress=False,
         )["Adj Close"]
 
-        # Garante DataFrame (quando há 1 ticker volta Series)
         if isinstance(portfolio_data, pd.Series):
             portfolio_data = portfolio_data.to_frame(name=tickers[0])
 
-        # Remove o nível superior do MultiIndex, se houver
         if isinstance(portfolio_data.columns, pd.MultiIndex):
             portfolio_data.columns = portfolio_data.columns.droplevel(0)
 
-        # 2) Baixa benchmark (Ibovespa)
+        # 2) Benchmark
         benchmark_ticker = "^BVSP"
         benchmark_data = yf.download(
             benchmark_ticker,
@@ -107,12 +108,12 @@ if st.button("🔁 Rodar Backtest") and tickers:
             progress=False,
         )["Adj Close"]
 
-        # 3) Combina e alinha datas
+        # 3) Alinhar datas
         combined = pd.concat([portfolio_data, benchmark_data], axis=1, join="inner")
         portfolio_data = combined[tickers]
         benchmark_data = combined[benchmark_ticker]
 
-        # 4) Normaliza (base 100)
+        # 4) Normalizar (base 100)
         normalized_port = portfolio_data / portfolio_data.iloc[0]
         portfolio = (normalized_port * weights).sum(axis=1)
         benchmark_norm = benchmark_data / benchmark_data.iloc[0]
@@ -155,7 +156,7 @@ if st.button("🔁 Rodar Backtest") and tickers:
             mime="text/csv",
         )
 
-        # 8) Tabela de cotações ajustadas
+        # 8) Tabela cotações
         st.subheader("📋 Cotações ajustadas (R$)")
         price_df = portfolio_data.copy()
         price_df["Ibovespa"] = benchmark_data
