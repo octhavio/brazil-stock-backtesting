@@ -8,6 +8,7 @@ st.set_page_config(layout="wide")
 st.title("📈 Backtesting de Carteira de Ações")
 
 # ⚙️ Parâmetros padrão
+# (mantemos o sufixo .SA internamente – o usuário não precisa digitá‑lo)
 default_tickers = [
     "BBAS3.SA",
     "SAPR11.SA",
@@ -20,7 +21,14 @@ default_tickers = [
     "CMIG4.SA",
 ]
 
-# 👉 Session state para persistir tickers na página
+# 👉 Função compatível para forçar rerun em diferentes versões do Streamlit
+def do_rerun():
+    if hasattr(st, "experimental_rerun"):
+        st.experimental_rerun()
+    elif hasattr(st, "rerun"):
+        st.rerun()
+
+# 👉 Session state
 if "tickers" not in st.session_state:
     st.session_state.tickers = default_tickers.copy()
 
@@ -34,13 +42,17 @@ st.header("🛠️ Configuração da Carteira")
 
 col_input, col_add = st.columns([3, 1])
 with col_input:
-    new_ticker = st.text_input("Adicionar ticker (ex.: PETR4.SA)")
+    new_ticker = st.text_input("Adicionar ticker (ex.: PETR4)")
 with col_add:
     if st.button("➕ Adicionar"):
-        t = new_ticker.strip().upper()
-        if t and t not in st.session_state.tickers:
-            st.session_state.tickers.append(t)
-            st.experimental_rerun()
+        raw = new_ticker.strip().upper()
+        if raw:
+            # Adiciona sufixo .SA se o usuário não digitou e não é índice/ETF global
+            if "." not in raw and not raw.startswith("^"):
+                raw += ".SA"
+            if raw not in st.session_state.tickers:
+                st.session_state.tickers.append(raw)
+                do_rerun()
 
 st.markdown("### 📋 Tickers atuais")
 for idx, tic in enumerate(st.session_state.tickers):
@@ -48,7 +60,7 @@ for idx, tic in enumerate(st.session_state.tickers):
     col_tic.write(f"- {tic}")
     if col_rem.button("🗑️", key=f"remove_{tic}"):
         st.session_state.tickers.pop(idx)
-        st.experimental_rerun()
+        do_rerun()
 
 col1, col2 = st.columns(2)
 with col1:
@@ -56,8 +68,7 @@ with col1:
 with col2:
     end = st.date_input("Data de fim", value=end_date)
 
-# 🎒 Calcula pesos iguais automaticamente
-
+# 🎒 Pesos iguais por padrão
 tickers = st.session_state.tickers
 weights = [1 / len(tickers)] * len(tickers) if tickers else []
 
@@ -131,17 +142,30 @@ if st.button("🔁 Rodar Backtest") and tickers:
 
         # 7) Tabela base 100
         st.subheader("📋 Dados utilizados (base 100)")
-        table_df = normalized_port.copy()
-        table_df["Carteira"] = portfolio
-        table_df["Ibovespa"] = benchmark_norm
-        st.dataframe(table_df)
+        table_norm = normalized_port.copy()
+        table_norm["Carteira"] = portfolio
+        table_norm["Ibovespa"] = benchmark_norm
+        st.dataframe(table_norm)
 
-        # Download CSV
-        csv = table_df.to_csv().encode("utf-8")
+        norm_csv = table_norm.to_csv().encode("utf-8")
         st.download_button(
-            "⬇️ Baixar CSV",
-            data=csv,
-            file_name="backtest_data.csv",
+            "⬇️ Baixar CSV (base 100)",
+            data=norm_csv,
+            file_name="backtest_base100.csv",
+            mime="text/csv",
+        )
+
+        # 8) Tabela de cotações ajustadas
+        st.subheader("📋 Cotações ajustadas (R$)")
+        price_df = portfolio_data.copy()
+        price_df["Ibovespa"] = benchmark_data
+        st.dataframe(price_df)
+
+        price_csv = price_df.to_csv().encode("utf-8")
+        st.download_button(
+            "⬇️ Baixar CSV (cotações)",
+            data=price_csv,
+            file_name="backtest_quotes.csv",
             mime="text/csv",
         )
 
